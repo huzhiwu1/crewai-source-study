@@ -219,6 +219,72 @@ Agent 侧的关键方法：`execute_task()`（约 856 行）是任务执行入�
 - **文档滞后于代码**：monorepo 改造后大量教程仍按旧结构写，以磁盘代码为准
 - **行号会漂移**：本文行号对应 v1.15.21，后续版本请用符号名搜索
 
-## 8. 下一步
+## 8. 精读知识域清单（源码地图 → 逐块拆解）
 
-这份地图解决「知道东西在哪」。接下来按阶段二选一个机制做深入拆解：机制原理 + 源码逐段解读 + 从零渐进复现（可运行代码）。
+这份地图是**总纲**。按它逐块精读，**一次只拆一块**。每块产出 = 分析文档（`docs/`）+ 可运行复现代码（`articles/`）+ 任务书（`tasks/`），完成后回这里把状态从 ⬜ 改成 ✅。
+
+### 工作循环
+
+1. 分析方（家里 Mac）按地图选一块 → 写任务书到 `tasks/<块名>/`
+2. 志武 pull → 让公司电脑的 Codex 按任务书实现 → push
+3. 分析方 pull → 审代码与报告 → 写分析文档 `docs/` → 出下一块任务书
+
+### 精读一：hierarchical 多 agent 协同 🔄 进行中
+
+- **源码**：`crew.py`（2490 行，编排）、`agent/core.py`（Agent 定义）、`agents/crew_agent_executor.py`（执行循环）、`tools/agent_tools/`（同事即工具）、`process.py`
+- **核心机制**：process 只是开关（两条分支进同一个 `_execute_tasks`）；hierarchical 下原始 Task 由 manager 执行、coworker 跑现场新建的临时 Task；manager 被禁止带普通工具；`AgentTools` 把同事包装成工具（delegate + ask question）；名字消毒兜住弱模型的非法 JSON；错误回文本不抛异常
+- **学习价值**：LLM 编排 vs 代码图编排的分歧点；多 agent 协同可以完全复用工具调用循环
+- **任务书**：`tasks/crewai-hierarchical/`（9 步，含前置底盘 step-01~04）
+- **状态**：🔄 任务书已出，等 Codex 实现
+
+### 精读二：Flow 事件驱动编排 ⬜
+
+- **源码**：`flow/`（13138 LOC）：`flow.py`、`persistence/`、`runtime/`、`dsl/`、`visualization/`、`human_feedback.py`、`conversational.py`
+- **核心机制**：确定性流程与 Crew 的自主循环互补；持久化续跑；人在环；声明式 DSL
+- **学习价值**：agent 怎么从玩具变成生产系统——比 `crew.py` 更值钱
+
+### 精读三：记忆管理 ⬜
+
+- **源码**：`memory/`（5360 LOC）：`unified_memory.py`、`analyze.py`、`recall_flow.py`、`encoding_flow.py`、`memory_scope.py`、`storage/`
+- **核心机制**：统一 Memory + LLM 分析 + 可插拔存储；作用域切分
+
+### 精读四：LLM 适配层 ⬜
+
+- **源码**：`llms/`（13174 LOC）+ `llm.py`（2775 行）：`base_llm.py`、`providers/`、`hooks/`、`cache.py`、`_finish_reason_utils.py`
+- **核心机制**：适配器模式把参数各异、返回各异的模型收敛成一套接口；结束原因归一化
+
+### 精读五：事件总线与可观测性 ⬜
+
+- **源码**：`events/`（10518 LOC）、`hooks/`、`state/`、`telemetry/`
+- **核心机制**：事件总线解耦；LLM/工具调用钩子点；checkpoint 与运行时状态
+
+### 精读六：外部能力接入 ⬜
+
+- **源码**：`mcp/`（MCP 客户端）、`a2a/`（13955 LOC，全仓最大）、`skills/`、`rag/`、`knowledge/`、`tools/`
+- **核心机制**：外部能力如何做成可插拔模块；Agent Skills 标准实现
+
+### 精读七：Task 输出契约与护栏 ⬜
+
+- **源码**：`task.py`（1566 行）、`tasks/`：`conditional_task.py`、`output_format.py`、`task_output.py`、`hallucination_guardrail.py`、`llm_guardrail.py`
+- **核心机制**：输出契约（`output_pydantic`）；条件任务；用 LLM 校验 LLM 的输出是否为幻觉
+
+### 精读八：kickoff 生命周期与 checkpoint ⬜
+
+- **源码**：`crew.py:995-1088`、`state/checkpoint_config.py`、`state/checkpoint_listener.py`、`state/runtime.py`
+- **核心机制**：一个入口承担输入插值、checkpoint 恢复、streaming、事件作用域、前后回调、memory drain、用量统计
+
+---
+
+### 精读一详情：9 步拆解
+
+- **前置底盘（step-01~04）**：Process 开关与共享执行循环 → Task 数据流 → Agent/Executor 分离 → 工具调用循环
+- **hierarchical 本体（step-05~09）**：Manager 创建与任务归属 → AgentTools 同事即工具 → 委派闭环 → 错误与边界 → 生命周期
+
+每步内置**对照组**（朴素做法 vs CrewAI 做法并排跑），用来看清设计取舍。
+
+产出目标：
+
+- `docs/crewai-hierarchical-analysis.md`
+- `articles/crewai-hierarchical-python/`、`articles/crewai-hierarchical-ts/`
+- `reports/crewai-hierarchical-*.md`
+- 飞书文档（AI Agent 知识点手册 / crewai源码分析）
