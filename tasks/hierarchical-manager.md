@@ -50,12 +50,30 @@
 - **step-05 委派闭环**：`_execute` 现场造 Task → 调目标 agent 执行 → 结果回填给调用方。验证：完整链路 kickoff → manager 决策 → delegate → 目标 agent 执行 → 结果回填 → 最终输出。
 - **step-06 完整版**：整合前 5 步 + 容错路径。验证：正常链路 + 找不到 coworker 两条路径都跑出预期结果。
 
+## 环境变量（真实 LLM 用）
+
+step-05 / step-06 需要真实 LLM，统一走 OpenAI 兼容接口，通过环境变量注入，**禁止硬编码**：
+
+| 变量 | 说明 |
+|-|-|
+| `LLM_API_KEY` | 密钥。**只放本地 `.env`** |
+| `LLM_BASE_URL` | OpenAI 兼容 base url，例如 `https://api.deepseek.com/v1` |
+| `LLM_MODEL` | 模型名，例如 `deepseek-chat` |
+
+要求：
+
+- 两个语言版本都提供 `.env.example`（**只有变量名和示例值，不含真值**）
+- `.env` 已在仓库 `.gitignore` 里，**严禁提交**
+- `reports/*.md` 可以写模型名和 base url 域名，**绝不能出现任何 key**
+
 ## 铁律（硬性）
 
 1. **必须能真跑**，每步独立：
    - Python：`python3 src/steps/step_0X.py`（或用 `uv run`，二者之一，报告里写清）
    - TS：`pnpm tsx src/steps/step-0X.ts`（或 `npx tsx`）
-2. **默认用确定性 stub 代替真实 LLM**（不要求 API key）。把「模型输出」写成可预测的固定回复，这样机制才对且可断言。**若额外接真实 LLM，必须在 reports 里显式标注**，并说明用的模型与 .env 变量名（**不要把 key 写进仓库**）。
+2. **step-05 / step-06 必须接真实 LLM 跑通**，把真实输出贴进 reports。step-01~04 是纯机制（枚举分发、任务串联、manager 创建、名字消毒与匹配），**不需要 LLM**，用确定性代码即可。
+   - 真实 LLM 只负责一件事：**manager 决定把任务派给谁**（产出 tool call）。
+   - 若某个 step 因为网络/额度跑不通，**如实贴失败输出**并说明原因，不要改写成假成功。
 3. **不许 import `crewai` 包本身**（纯自实现），只用标准库和常规基础依赖。
 4. 每一步顶部注释写清：学习目标 + 对应源码锚点。
 5. 终端输出用分隔线分组，关键断言打 ✅/❌，结尾一句总结。
@@ -64,10 +82,11 @@
 ## 验收标准
 
 1. 两个语言版本每步都能独立跑通
-2. step-05 完整演示委派闭环
+2. step-05 完整演示委派闭环，**且真实 LLM 参与决策**
 3. step-06 演示「找不到 coworker」返回错误文本而不崩溃
 4. 两语言步骤编号、语义一一对应
-5. reports 是真实输出
+5. reports 是真实输出（含真实 LLM 的原始回复片段）
+6. 仓库里不存在任何 `.env` 或密钥（自查一遍 `git diff --cached`）
 
 ## 有疑问怎么办
 

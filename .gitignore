@@ -4,5 +4,11 @@ source/
 # lark-cli 草稿工作区
 draft_*/
 
+# 本地密钥（严禁提交）
+.env
+.env.local
+*.env
+!.env.example
+
 node_modules/
 .DS_Store
