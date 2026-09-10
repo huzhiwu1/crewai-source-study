@@ -1,6 +1,6 @@
 # CrewAI 源码地图（v1.15.21）
 
-这份文档是 CrewAI 源码的「全局导航图」。目标不是讲透每个机制，而是让你读完能回答三个问题：CrewAI 由哪几层构成？一次 `kickoff` 从哪走到哪？想改某个能力该去哪个文件？
+这份文档是 CrewAI 源码的「全局导航图」。目标不是讲透每个机制，而是让你读完能回答四个问题：CrewAI 由哪几层构成？一次 `kickoff` 从哪走到哪？哪些工作交给 LLM、哪些必须由 Python 控制？想改某个能力该去哪个文件？
 
 **适用对象**：有 AI Agent 基础概念（知道 agent / tool / task 大致是什么）的工程师，Python 能读、不要求能写。
 
@@ -12,14 +12,14 @@
 
 顶层是 `lib/`，下面六个独立包，各自有 `pyproject.toml`：
 
-| 包 | 职责 |
-|-|-|
-| `lib/crewai` | 核心框架本体，本文件主要讲的就是它 |
-| `lib/crewai-core` | 共享工具：版本、路径、user-data、telemetry、printer |
-| `lib/crewai-tools` | 官方工具集（不在核心包内） |
-| `lib/crewai-files` | 多模态输入的文件处理 |
-| `lib/cli` | CLI：scaffold、run、deploy、manage |
-| `lib/devtools` | 版本号 bump 与 git 自动化，非运行时 |
+| 包                 | 职责                                                |
+| ------------------ | --------------------------------------------------- |
+| `lib/crewai`       | 核心框架本体，本文件主要讲的就是它                  |
+| `lib/crewai-core`  | 共享工具：版本、路径、user-data、telemetry、printer |
+| `lib/crewai-tools` | 官方工具集（不在核心包内）                          |
+| `lib/crewai-files` | 多模态输入的文件处理                                |
+| `lib/cli`          | CLI：scaffold、run、deploy、manage                  |
+| `lib/devtools`     | 版本号 bump 与 git 自动化，非运行时                 |
 
 核心代码在 `lib/crewai/src/crewai/`，下面所有路径都相对它。
 
@@ -27,61 +27,78 @@
 
 ```mermaid
 graph TD
-  A["crew.kickoff()"] --> B{"crew.process"}
+  A["crew.kickoff()"] --> A1["准备输入 / checkpoint / runtime scope"]
+  A1 --> B{"crew.process"}
   B -->|sequential| C["_run_sequential_process()"]
   B -->|hierarchical| D["_run_hierarchical_process()"]
   D --> E["_create_manager_agent()"]
   C --> F["_execute_tasks()"]
   E --> F
-  F --> G["agent.execute_task()"]
-  G --> H["create_agent_executor()"]
+  F --> F1["上下文 / conditional / async / tools"]
+  F1 --> G["Task.execute_sync/async()"]
+  G --> H["Agent.execute_task()"]
   H --> I["CrewAgentExecutor.invoke()"]
   I --> J{"_invoke_loop()"}
-  J --> K["_invoke_loop_react()"]
-  J --> L["_invoke_loop_native_tools()"]
-  J --> M["_invoke_loop_native_no_tools()"]
+  J -->|支持原生工具且有工具| K["_invoke_loop_native_tools()"]
+  J -->|否则| L["_invoke_loop_react()"]
+  K --> M["工具结果写回消息，继续循环"]
+  K --> N["native 路径的 no-tools 防御分支"]
+  L --> M
 ```
 
 读这条链路的三个要点：
 
-1. **编排在 Crew，执行在 Agent，循环在 Executor**。三层各管一段，别混着读。
-2. **hierarchical 会临时造一个 manager agent**，用它来做任务分配和汇总，等于把调度器也交给 LLM。这是它和 LangGraph 那种「代码图确定性编排」最大的分野。
-3. **最底层不是一个循环，是三条**：文本 ReAct、原生 tool calling、原生但无工具。模型能力不同走不同路径。
+1. **编排在 Crew，任务边界在 Task，执行入口在 Agent，推理循环在 Executor**。三层各管一段，别混着读。
+2. **hierarchical 只在共享任务循环前准备 manager**：`_run_hierarchical_process()` 调 `_create_manager_agent()`，随后仍进入 `_execute_tasks()`。manager 可以由框架创建，也可以由用户提供；用户提供的 manager 不允许自带普通工具，委派工具由 Crew 注入。
+3. **`_invoke_loop()` 的入口分支实际是两路**：有原生工具调用能力且存在工具时走 native tools，否则走 ReAct。native tools 内部才有 `native_no_tools` 的简单调用路径；它不是第三个并列入口。
+4. **`kickoff()` 不只是路由器**：它还包住输入插值、checkpoint 恢复、streaming、runtime/event scope、前后回调、异常事件、memory drain 和用量统计。
+
+### 2.1 先记住五条设计原则
+
+这五条比目录名称更能解释 CrewAI 的设计：
+
+1. **声明式定义，运行时装配**：`Crew`、`Agent`、`Task` 是带校验的配置对象；执行时才准备 manager、工具、上下文、Executor 和运行时状态。
+2. **把 LLM 不确定性限制在明确边界**：LLM 负责生成答案、选择工具和 hierarchical 委派；Python 负责任务顺序、上下文选择、循环推进、校验、生命周期和错误传播。
+3. **用统一执行循环复用能力**：普通 Agent、manager 和被委派的 coworker 最终都通过 Agent/Executor 的执行链路运行，不为每种协作关系另造一套推理引擎。
+4. **失败优先转化为可恢复信息**：工具错误、非法 agent 名称、上下文长度、最大迭代等情况，会在适合的边界转成模型或上层流程可消费的信息；不能恢复的错误才继续向上抛出。
+5. **自主性与确定性并存**：Crew 把自主性限制在任务执行和 Agent 决策内部；Flow、Task 校验、checkpoint 和事件系统为自主执行提供确定性的外部边界。
+
+对应源码锚点：`crew.py:432-482, 995-1090, 1512-1685`、`task.py:585-890`、`agents/crew_agent_executor.py:230-690`。
 
 ## 3. 模块全景
 
-按代码量排序，规模用 LOC 表示，能看出作者的投入重心在哪。
+下面按运行时角色列出导航入口。LOC 只是当前版本的规模快照，不能当作重要性、复杂度或阅读顺序的证据；真正的阅读顺序见第 5 节。
 
-| 模块 | 规模 | 一句话职责 |
-|-|-|-|
-| `a2a/` | 13,955 LOC / 47 文件 | Agent-to-Agent 协议通信 |
-| `flow/` | 13,138 LOC / 41 文件 | 事件驱动的确定性编排（含持久化、人在环、DSL、可视化） |
-| `llms/` | 13,174 LOC / 25 文件 | 多 provider LLM 适配层（base_llm、hooks、providers、cache） |
-| `utilities/` | 10,905 LOC / 52 文件 | 通用工具与异常体系 |
-| `events/` | 10,518 LOC / 41 文件 | 事件总线，用于监控和扩展 agent 行为 |
-| `experimental/` | 6,367 LOC / 21 文件 | 实验性与兼容导出（新执行器、会话式） |
-| `rag/` | 6,028 LOC / 95 文件 | RAG 基础设施 |
-| `agents/` | 5,393 LOC / 29 文件 | **真正的执行器**：推理循环、输出解析、工具处理 |
-| `memory/` | 5,360 LOC / 14 文件 | 统一记忆：LLM 分析 + 可插拔存储 |
-| `project/` | 4,315 LOC / 8 文件 | 项目级配置与脚手架支撑 |
-| `tools/` | 3,701 LOC / 19 文件 | 工具基类、工具调用、失败处理、缓存 |
-| `agent/` | 2,795 LOC / 6 文件 | **Agent 定义**：属性、校验、任务执行入口 |
-| `llm.py` | 2,775 LOC | LLM 对外统一封装 |
-| `mcp/` | 2,716 LOC / 11 文件 | MCP 客户端支持（client、config、transports、tool_resolver） |
-| `crew.py` | 2,490 LOC | **编排核心**：Crew 类、校验、kickoff 主流程 |
-| `hooks/` | 2,056 LOC / 8 文件 | LLM 与工具调用钩子（after_llm_call 等） |
-| `state/` | 1,725 LOC / 10 文件 | checkpoint 配置与监听、事件记录、运行时状态 |
-| `task.py` | 1,566 LOC | **任务定义**：输出契约、上下文、护栏 |
-| `telemetry/` | 1,547 LOC / 4 文件 | 遥测 |
-| `skills/` | 1,540 LOC / 9 文件 | Agent Skills 标准实现（loader、registry、parser、validation） |
-| `knowledge/` | 1,472 LOC / 21 文件 | 知识源接入 |
-| `types/` | 1,120 LOC / 6 文件 | 回调、crew_chat、streaming、usage_metrics |
-| `lite_agent.py` | 1,068 LOC | 轻量 Agent 实现 |
-| `crews/` | 607 LOC / 3 文件 | CrewOutput 等编排产物 |
-| `core/` | 563 LOC / 4 文件 | 核心接口定义 |
-| `tasks/` | 435 LOC / 6 文件 | 条件任务、输出格式、护栏 |
-| `security/` | 274 LOC / 4 文件 | 指纹与安全配置 |
-| `process.py` | 11 LOC | 只有 Process 枚举：sequential / hierarchical |
+| 模块            | 规模                 | 一句话职责                                                    |
+| --------------- | -------------------- | ------------------------------------------------------------- |
+| `a2a/`          | 13,955 LOC / 47 文件 | Agent-to-Agent 协议通信                                       |
+| `flow/`         | 13,138 LOC / 41 文件 | 事件驱动的确定性编排（含持久化、人在环、DSL、可视化）         |
+| `llms/`         | 13,174 LOC / 25 文件 | 多 provider LLM 适配层（base_llm、hooks、providers、cache）   |
+| `utilities/`    | 10,905 LOC / 52 文件 | 通用工具与异常体系                                            |
+| `events/`       | 10,518 LOC / 41 文件 | 事件总线，用于监控和扩展 agent 行为                           |
+| `experimental/` | 6,367 LOC / 21 文件  | 实验性与兼容导出（新执行器、会话式）                          |
+| `rag/`          | 6,028 LOC / 95 文件  | RAG 基础设施                                                  |
+| `agents/`       | 5,393 LOC / 29 文件  | **真正的执行器**：推理循环、输出解析、工具处理                |
+| `memory/`       | 5,360 LOC / 14 文件  | 统一记忆：LLM 分析 + 可插拔存储                               |
+| `project/`      | 4,315 LOC / 8 文件   | 项目级配置与脚手架支撑                                        |
+| `tools/`        | 3,701 LOC / 19 文件  | 工具基类、工具调用、失败处理、缓存                            |
+| `agent/`        | 2,795 LOC / 6 文件   | **Agent 定义**：属性、校验、任务执行入口                      |
+| `llm.py`        | 2,775 LOC            | LLM 对外统一封装                                              |
+| `mcp/`          | 2,716 LOC / 11 文件  | MCP 客户端支持（client、config、transports、tool_resolver）   |
+| `crew.py`       | 2,490 LOC            | **编排核心**：Crew 类、校验、kickoff 主流程                   |
+| `hooks/`        | 2,056 LOC / 8 文件   | LLM 与工具调用钩子（after_llm_call 等）                       |
+| `state/`        | 1,725 LOC / 10 文件  | checkpoint 配置与监听、事件记录、运行时状态                   |
+| `task.py`       | 1,566 LOC            | **任务定义**：输出契约、上下文、护栏                          |
+| `telemetry/`    | 1,547 LOC / 4 文件   | 遥测                                                          |
+| `skills/`       | 1,540 LOC / 9 文件   | Agent Skills 标准实现（loader、registry、parser、validation） |
+| `knowledge/`    | 1,472 LOC / 21 文件  | 知识源接入                                                    |
+| `types/`        | 1,120 LOC / 6 文件   | 回调、crew_chat、streaming、usage_metrics                     |
+| `lite_agent.py` | 1,068 LOC            | 轻量 Agent 实现                                               |
+| `crews/`        | 607 LOC / 3 文件     | CrewOutput 等编排产物                                         |
+| `core/`         | 563 LOC / 4 文件     | 核心接口定义                                                  |
+| `tasks/`        | 435 LOC / 6 文件     | 条件任务、输出格式、护栏                                      |
+| `security/`     | 274 LOC / 4 文件     | 指纹与安全配置                                                |
+| `process.py`    | 11 LOC               | 只有 Process 枚举：sequential / hierarchical                  |
 
 ## 4. 关键模块拆解
 
@@ -89,9 +106,9 @@ graph TD
 
 `process.py` 只有 11 行，是个枚举。但它的取值决定整条链路走向，是理解 CrewAI 的第一把钥匙。
 
-`crew.py` 里 `Crew(FlowTrackable, BaseModel)` 承担了全部编排职责：
+`crew.py` 里 `Crew(FlowTrackable, BaseModel)` 承担了主要编排和运行时生命周期职责，但不是所有执行细节都在这里：
 
-- `kickoff()`：对外唯一主入口（约 995 行起）
+- `kickoff()`：同步主入口；同文件还提供 `kickoff_for_each()`、`kickoff_async()`、`kickoff_for_each_async()` 和 streaming 分支（约 995 行起）
 - `_run_sequential_process()`：顺序执行（约 1512 行起）
 - `_run_hierarchical_process()`：分层执行（约 1516 行起）
 - `_create_manager_agent()`：造 manager agent（约 1521 行起）
@@ -105,27 +122,29 @@ graph TD
 
 这两个目录名字很像，职责完全不同，是最容易读混的地方：
 
-| 目录 | 是什么 |
-|-|-|
-| `agent/` | **定义**。核心是 `agent/core.py` 里的 `Agent(BaseAgent)`，管属性、校验、记忆检索、任务前置准备 |
-| `agents/` | **执行**。核心是 `agents/crew_agent_executor.py`，管推理循环、输出解析、工具调用 |
+| 目录      | 是什么                                                                                         |
+| --------- | ---------------------------------------------------------------------------------------------- |
+| `agent/`  | **定义**。核心是 `agent/core.py` 里的 `Agent(BaseAgent)`，管属性、校验、记忆检索、任务前置准备 |
+| `agents/` | **执行**。核心是 `agents/crew_agent_executor.py`，管推理循环、输出解析、工具调用               |
 
 Agent 侧的关键方法：`execute_task()`（约 856 行）是任务执行入口，`_build_execution_prompt()`（约 1114 行）拼 prompt，`create_agent_executor()`（约 1157 行）造出执行器，然后交给 `_execute_with_timeout()` 或 `_execute_without_timeout()`。
 
-执行器侧的循环分发是这样切的：`invoke()`（约 230 行）→ `_invoke_loop()`（约 331 行）按能力分发到三条路径：
+执行器侧的循环分发是这样切的：`invoke()`（约 230 行）→ `_invoke_loop()`（约 331 行）先按模型能力分成两条路径：
 
 - `_invoke_loop_react()`（约 352 行）：文本 ReAct，靠解析文本拿 action
 - `_invoke_loop_native_tools()`（约 506 行）：原生 tool calling，模型直接返回结构化 tool_calls
-- `_invoke_loop_native_no_tools()`（约 619 行）：原生接口但没有工具
+- `_invoke_loop_native_no_tools()`（约 619 行）：native tools 路径内部的无工具简单调用，不是 `_invoke_loop()` 的并列分支
 
 再往下 `_handle_native_tool_calls()`（约 689 行）和 `_handle_agent_action()`（约 1455 行）负责把工具结果回填进对话。`agents/` 里还有 `parser.py`（解析 LLM 输出）、`tools_handler.py`（工具处理）、`step_executor.py`（单步执行）——这就是 agent 主循环的黄金三件套。
 
-### 4.3 Flow：从玩具到生产的那一半
+### 4.3 Flow：确定性外壳与 Agent 能力的组合层
 
-`flow/` 是全仓最重的业务模块（13,138 LOC），入口是 `flow/flow.py` 的 `Flow(_ConversationalMixin, RuntimeFlow[T])`。它和 Crew 是互补关系：
+`flow/` 是大型业务模块（当前快照约 13,138 LOC），入口是 `flow/flow.py` 的 `Flow(_ConversationalMixin, RuntimeFlow[T])`。它和 Crew 是互补关系：
 
-- **Crew**：自主探索，角色扮演，LLM 决定下一步
-- **Flow**：确定性流程，事件驱动，代码决定下一步
+- **Crew**：任务拓扑通常由代码声明；任务内部的推理、工具选择和 hierarchical 委派可以由 LLM 决策
+- **Flow**：节点和转移主要由代码控制，但节点内部仍然可以调用 Agent、LLM 或 Crew
+
+所以不要把它记成“Crew 全部自主、Flow 完全确定性”。更准确的边界是：Flow 把自主性放进代码明确划定的节点和生命周期里，适合增加持久化、人在环、恢复和可观测性。
 
 `flow/` 里的子目录值得单独看：`persistence/`（持久化与续跑）、`runtime/`（运行时）、`dsl/`（声明式定义）、`visualization/`（可视化）、`human_feedback.py`（人在环）、`conversational.py`（会话式）。**想学「agent 怎么变成生产系统」，这一块比 crew.py 更值。**
 
@@ -151,7 +170,27 @@ Agent 侧的关键方法：`execute_task()`（约 856 行）是任务执行入�
 
 四者分工：`events/`（10,518 LOC）是事件总线；`hooks/` 提供 LLM 调用与工具调用的钩子点；`state/` 管 checkpoint 配置、checkpoint 监听、事件记录与运行时状态；`telemetry/` 管遥测上报。
 
-如果要在生产里做「过程可观测 + 可恢复」，这四个目录的拆分方式值得直接抄。
+如果要在生产里做「过程可观测 + 可恢复」，这四个目录的拆分方式值得研究，但不要把目录拆分本身当成设计结论：应先追踪事件的发布者、监听者、状态存储者和恢复入口。
+
+### 4.8 Task 数据流：CrewAI 的组合单位
+
+Task 不只是“给 Agent 的一段 prompt”，而是执行契约：它携带描述、期望输出、上下文依赖、执行模式、输出格式和 guardrail。
+
+一次普通任务大致经过：
+
+```text
+Crew._execute_tasks()
+  → 选择 agent / 准备 tools / 计算 context
+  → Task.execute_sync() 或 Task.execute_async()
+  → Task._execute_core()
+  → Agent.execute_task()
+  → TaskOutput(raw / json / pydantic / messages / tool_failures)
+  → 加入 task_outputs，供后续 Task 选择上下文
+```
+
+上下文不是永远“把所有前序输出塞进去”：`Crew._get_context()` 在 `task.context` 未指定时聚合已完成输出；显式指定时只聚合被引用的 Task。`ConditionalTask`、async futures 和 checkpoint 恢复也都在 `_execute_tasks()` 这层汇合。对应源码：`crew.py:1561-1685, 1886-1890`、`task.py:585-890`。
+
+这体现了一个可迁移的设计：**LLM 负责生成任务结果，框架负责把结果变成有边界的数据流**。
 
 ## 5. 推荐阅读顺序
 
@@ -162,7 +201,7 @@ Agent 侧的关键方法：`execute_task()`（约 856 行）是任务执行入�
 1. 读 `process.py`（11 行），记住两个取值
 2. 读 `crew.py` 的 `kickoff` 与 `_execute_tasks`，只看主流程，跳过校验
 3. 读 `agent/core.py` 的 `execute_task`，看它怎么把任务交给执行器
-4. 读 `agents/crew_agent_executor.py` 的 `invoke` 与 `_invoke_loop`，看三条循环怎么分
+4. 读 `agents/crew_agent_executor.py` 的 `invoke` 与 `_invoke_loop`，看 native tools 与 ReAct 怎么分流，再看 native no-tools 的内部防御分支
 
 **完成标准**：能不看文档画出第 2 节那张图。
 
@@ -170,7 +209,7 @@ Agent 侧的关键方法：`execute_task()`（约 856 行）是任务执行入�
 
 二选一：
 
-- 想学**多 agent 怎么协同** → `_run_hierarchical_process` + `_create_manager_agent` + manager 的工具集（`get_delegation_tools`）
+- 想学**多 agent 怎么协同** → `_run_hierarchical_process` + `_create_manager_agent` + `_update_manager_tools` + `tools/agent_tools/agent_tools.py`
 - 想学**agent 怎么进生产** → `flow/persistence/` + `state/checkpoint_*` + `flow/human_feedback.py`
 
 **完成标准**：能说出这个机制在什么情况下会失效、有哪些已知取舍。
@@ -183,24 +222,24 @@ Agent 侧的关键方法：`execute_task()`（约 856 行）是任务执行入�
 
 行号基于 v1.15.21，版本升级后可能漂移，用类名和方法名搜索定位更稳。
 
-| 文件 | 行号 | 是什么 |
-|-|-|-|
-| `process.py` | 4 | Process 枚举 |
-| `crew.py` | 164 | class Crew |
-| `crew.py` | 995 | kickoff() |
-| `crew.py` | 1512 | _run_sequential_process() |
-| `crew.py` | 1516 | _run_hierarchical_process() |
-| `crew.py` | 1521 | _create_manager_agent() |
-| `crew.py` | 1561 | _execute_tasks() |
-| `agent/core.py` | 216 | class Agent(BaseAgent) |
-| `agent/core.py` | 856 | execute_task() |
-| `agent/core.py` | 1157 | create_agent_executor() |
-| `agents/crew_agent_executor.py` | 98 | class CrewAgentExecutor |
-| `agents/crew_agent_executor.py` | 230 | invoke() |
-| `agents/crew_agent_executor.py` | 331 | _invoke_loop() 分发 |
-| `agents/crew_agent_executor.py` | 352 / 506 / 619 | 三条循环实现 |
-| `agents/crew_agent_executor.py` | 689 | _handle_native_tool_calls() |
-| `flow/flow.py` | 33 | class Flow |
+| 文件                            | 行号                  | 是什么                                                                         |
+| ------------------------------- | --------------------- | ------------------------------------------------------------------------------ |
+| `process.py`                    | 4                     | Process 枚举                                                                   |
+| `crew.py`                       | 164                   | class Crew                                                                     |
+| `crew.py`                       | 995                   | kickoff()                                                                      |
+| `crew.py`                       | 1512                  | _run_sequential_process()                                                      |
+| `crew.py`                       | 1516                  | _run_hierarchical_process()                                                    |
+| `crew.py`                       | 1521                  | _create_manager_agent()                                                        |
+| `crew.py`                       | 1561                  | _execute_tasks()                                                               |
+| `agent/core.py`                 | 216                   | class Agent(BaseAgent)                                                         |
+| `agent/core.py`                 | 856                   | execute_task()                                                                 |
+| `agent/core.py`                 | 1157                  | create_agent_executor()                                                        |
+| `agents/crew_agent_executor.py` | 98                    | class CrewAgentExecutor                                                        |
+| `agents/crew_agent_executor.py` | 230                   | invoke()                                                                       |
+| `agents/crew_agent_executor.py` | 331                   | _invoke_loop() 分发                                                            |
+| `agents/crew_agent_executor.py` | 331 / 352 / 506 / 619 | `_invoke_loop` 分流；ReAct、native tools，以及 native 路径的 no-tools 内部实现 |
+| `agents/crew_agent_executor.py` | 689                   | _handle_native_tool_calls()                                                    |
+| `flow/flow.py`                  | 33                    | class Flow                                                                     |
 
 ## 7. 哪些地方值得学，哪些要小心
 
@@ -208,7 +247,7 @@ Agent 侧的关键方法：`execute_task()`（约 856 行）是任务执行入�
 
 - **用枚举做架构开关**：11 行的 Process 决定两条完全不同的执行路线，抽象成本极低
 - **定义与执行分离**：`agent/` 管定义、`agents/` 管执行，职责边界干净
-- **三条循环兜底**：不假设模型一定有原生 tool calling 能力，回退路径是显式写出来的
+- **能力适配而非能力假设**：不假设模型一定有原生 tool calling 能力；主入口在 native tools 与 ReAct 间分流，native 路径还保留无工具的简单调用实现
 - **输出护栏**：用 LLM 校验 LLM 的输出是否为幻觉，这个模式可直接复用到自己的项目
 - **Flow 与 Crew 互补**：自主探索和确定性流程并存，而不是二选一，这是它走向生产的关键判断
 
@@ -218,6 +257,16 @@ Agent 侧的关键方法：`execute_task()`（约 856 行）是任务执行入�
 - **目录命名易混**：`agent/` 和 `agents/`、`tasks/` 和 `task.py`、`crews/` 和 `crew.py`，读之前先确认自己打开的是哪个
 - **文档滞后于代码**：monorepo 改造后大量教程仍按旧结构写，以磁盘代码为准
 - **行号会漂移**：本文行号对应 v1.15.21，后续版本请用符号名搜索
+
+### 源码事实、教学简化与工程推论要分开
+
+阅读本文时使用下面的标记习惯：
+
+- **源码事实**：能在指定版本的文件、类或方法中直接定位，例如 `Crew._execute_tasks()` 会处理上下文、conditional task、async futures 和 Task 执行。
+- **教学简化**：流程图把多个辅助函数合并成一个节点，例如“准备输入 / checkpoint / runtime scope”；它不是源码中的单个函数。
+- **工程推论**：例如“把 LLM 不确定性限制在明确边界”是从校验、循环和错误处理归纳出的设计理念，不是源码中的注释原文。
+
+遇到跨版本差异，先以 `/home/administrator/projects/crewAI` 中的目标 commit 为准，再用类名和方法名搜索；不要只凭行号判断行为。
 
 ## 8. 精读知识域清单（源码地图 → 逐块拆解）
 
@@ -240,7 +289,7 @@ Agent 侧的关键方法：`execute_task()`（约 856 行）是任务执行入�
 ### 精读二：Flow 事件驱动编排 ⬜
 
 - **源码**：`flow/`（13138 LOC）：`flow.py`、`persistence/`、`runtime/`、`dsl/`、`visualization/`、`human_feedback.py`、`conversational.py`
-- **核心机制**：确定性流程与 Crew 的自主循环互补；持久化续跑；人在环；声明式 DSL
+- **核心机制**：代码控制节点和转移，但节点内部仍可调用 Agent/LLM/Crew；持久化续跑；人在环；声明式 DSL
 - **学习价值**：agent 怎么从玩具变成生产系统——比 `crew.py` 更值钱
 
 ### 精读三：记忆管理 ⬜
@@ -271,7 +320,7 @@ Agent 侧的关键方法：`execute_task()`（约 856 行）是任务执行入�
 ### 精读八：kickoff 生命周期与 checkpoint ⬜
 
 - **源码**：`crew.py:995-1088`、`state/checkpoint_config.py`、`state/checkpoint_listener.py`、`state/runtime.py`
-- **核心机制**：一个入口承担输入插值、checkpoint 恢复、streaming、事件作用域、前后回调、memory drain、用量统计
+- **核心机制**：`kickoff()` 承担输入插值、checkpoint 恢复、streaming、事件作用域、前后回调、异常事件、memory drain、用量统计；异步和批量入口复用相同的生命周期意图，但不是同一个方法实现
 
 ---
 
