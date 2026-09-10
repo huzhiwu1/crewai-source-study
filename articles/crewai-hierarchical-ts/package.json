@@ -1,0 +1,22 @@
+{
+  "name": "@crewai-study/hierarchical-ts",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/steps/step-04-complete-assembly/index.ts",
+    "typecheck": "tsc --noEmit",
+    "step:01": "tsx src/steps/step-01-process-task/index.ts",
+    "step:02": "tsx src/steps/step-02-agent-loop/index.ts",
+    "step:03": "tsx src/steps/step-03-delegation-boundaries/index.ts",
+    "step:04": "tsx src/steps/step-04-complete-assembly/index.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7"
+  }
+}

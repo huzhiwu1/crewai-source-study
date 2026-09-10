@@ -1,0 +1,57 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "调试 hierarchical Step 01",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/articles/crewai-hierarchical-ts",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--import", "tsx/esm"],
+      "program": "${workspaceFolder}/articles/crewai-hierarchical-ts/src/steps/step-01-process-task/index.ts",
+      "envFile": "${workspaceFolder}/.env",
+      "sourceMaps": true,
+      "skipFiles": ["<node_internals>/**"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "调试 hierarchical Step 02",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/articles/crewai-hierarchical-ts",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--import", "tsx/esm"],
+      "program": "${workspaceFolder}/articles/crewai-hierarchical-ts/src/steps/step-02-agent-loop/index.ts",
+      "envFile": "${workspaceFolder}/.env",
+      "sourceMaps": true,
+      "skipFiles": ["<node_internals>/**"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "调试 hierarchical Step 03",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/articles/crewai-hierarchical-ts",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--import", "tsx/esm"],
+      "program": "${workspaceFolder}/articles/crewai-hierarchical-ts/src/steps/step-03-delegation-boundaries/index.ts",
+      "envFile": "${workspaceFolder}/.env",
+      "sourceMaps": true,
+      "skipFiles": ["<node_internals>/**"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "调试 hierarchical Step 04 总装",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/articles/crewai-hierarchical-ts",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--import", "tsx/esm"],
+      "program": "${workspaceFolder}/articles/crewai-hierarchical-ts/src/steps/step-04-complete-assembly/index.ts",
+      "envFile": "${workspaceFolder}/.env",
+      "sourceMaps": true,
+      "skipFiles": ["<node_internals>/**"],
+      "console": "integratedTerminal"
+    }
+  ]
+}

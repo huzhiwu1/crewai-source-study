@@ -1,0 +1,38 @@
+{
+  "name": "crewai-source-study",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.15.1",
+  "scripts": {
+    "hierarchical": "pnpm --filter @crewai-study/hierarchical-ts start",
+    "hierarchical:step:01": "pnpm --filter @crewai-study/hierarchical-ts step:01",
+    "hierarchical:step:02": "pnpm --filter @crewai-study/hierarchical-ts step:02",
+    "hierarchical:step:03": "pnpm --filter @crewai-study/hierarchical-ts step:03",
+    "hierarchical:step:04": "pnpm --filter @crewai-study/hierarchical-ts step:04",
+    "hierarchical:typecheck": "pnpm --filter @crewai-study/hierarchical-ts typecheck",
+    "lint": "eslint .",
+    "format": "prettier --write \"articles/**/*.ts\" \"*.{json,mjs,yaml,yml}\"",
+    "format:check": "prettier --check \"articles/**/*.ts\" \"*.{json,mjs,yaml,yml}\"",
+    "check": "pnpm format:check && pnpm lint && pnpm hierarchical:typecheck",
+    "prepare": "husky",
+    "precommit": "lint-staged"
+  },
+  "lint-staged": {
+    "*.{ts,js,mjs}": [
+      "prettier --check",
+      "eslint --max-warnings=0"
+    ],
+    "*.{json,yaml,yml,md}": [
+      "prettier --check"
+    ]
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "eslint": "^9.17.0",
+    "globals": "^15.14.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.3.0",
+    "prettier": "^3.4.2",
+    "typescript-eslint": "^8.18.0"
+  }
+}
